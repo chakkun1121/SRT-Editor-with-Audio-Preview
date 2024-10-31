@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT Editor with Audio Preview</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+       <style>
+        /* オーディオコントロールの固定位置用のスタイル */
+        .audio-controls-container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            padding: 1rem;
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+        
+        /* メインコンテンツがオーディオコントロールに隠れないようにするための余白 */
+        .main-content {
+            padding-bottom: 6rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const App = () => {
+            const [srtContent, setSrtContent] = React.useState('');
+            const [audioSrc, setAudioSrc] = React.useState('');
+            const [fileHandle, setFileHandle] = React.useState(null);
+            const [lineContents, setLineContents] = React.useState([]);
+            const [saveStatus, setSaveStatus] = React.useState(''); // 保存状態を管理
+            const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
+            const audioRef = React.useRef(null);
+            const saveTimeoutRef = React.useRef(null);
+
+            // コンポーネントのアンマウント時にタイムアウトをクリア
+            React.useEffect(() => {
+                return () => {
+                    if (saveTimeoutRef.current) {
+                        clearTimeout(saveTimeoutRef.current);
+                    }
+                };
+            }, []);
+
+            // 未保存の変更がある場合にユーザーに警告
+            React.useEffect(() => {
+                const handleBeforeUnload = (e) => {
+                    if (hasUnsavedChanges) {
+                        e.preventDefault();
+                        e.returnValue = '';
+                    }
+                };
+
+                window.addEventListener('beforeunload', handleBeforeUnload);
+                return () => {
+                    window.removeEventListener('beforeunload', handleBeforeUnload);
+                };
+            }, [hasUnsavedChanges]);
+
+            // SRTの解析関数
+            const parseSRTTimestamp = (timestamp) => {
+                const [hours, minutes, seconds] = timestamp.split(':');
+                const [secs, ms] = seconds.split(',');
+                return parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(secs) + parseInt(ms) / 1000;
+            };
+
+            // タイムスタンプクリック時の処理
+            const handleTimestampClick = (timestamp) => {
+                if (audioRef.current && audioSrc) {
+                    const timeInSeconds = parseSRTTimestamp(timestamp);
+                    audioRef.current.currentTime = timeInSeconds;
+                    audioRef.current.play().catch(error => console.error('再生エラー:', error));
+                }
+            };
+
+            // デバウンスされた自動保存
+            const debouncedAutoSave = React.useCallback(async () => {
+                if (saveTimeoutRef.current) {
+                    clearTimeout(saveTimeoutRef.current);
+                }
+
+                saveTimeoutRef.current = setTimeout(async () => {
+                    if (fileHandle && hasUnsavedChanges) {
+                        try {
+                            await handleSave();
+                            setHasUnsavedChanges(false);
+                            setSaveStatus('最終保存: ' + new Date().toLocaleTimeString());
+                        } catch (error) {
+                            setSaveStatus('自動保存に失敗しました');
+                            console.error('自動保存エラー:', error);
+                        }
+                    }
+                }, 2000); // 2秒のデバウンス
+            }, [fileHandle, hasUnsavedChanges]);
+
+            // 変更があった時に自動保存をトリガー
+            React.useEffect(() => {
+                if (hasUnsavedChanges) {
+                    setSaveStatus('保存中...');
+                    debouncedAutoSave();
+                }
+            }, [hasUnsavedChanges, debouncedAutoSave]);
+
+            // SRTファイルの読み込み
+            const handleSRTUpload = async () => {
+                try {
+                    // File System Access APIを使用してファイルを開く
+                    const handle = await window.showOpenFilePicker({
+                        types: [
+                            {
+                                description: 'SRT Files',
+                                accept: {
+                                    'text/plain': ['.srt'],
+                                },
+                            },
+                        ],
+                    });
+                    
+                    setFileHandle(handle[0]);
+                    const file = await handle[0].getFile();
+                    const content = await file.text();
+                    setSrtContent(content);
+                    parseAndSetLineContents(content);
+                    setHasUnsavedChanges(false);
+                    setSaveStatus('ファイルを読み込みました');
+                } catch (err) {
+                    if (err.name !== 'AbortError') {
+                        console.error('ファイル読み込みエラー:', err);
+                        alert('ファイルの読み込みに失敗しました。');
+                    }
+                }
+            };
+
+            // 音声ファイルの読み込み
+            const handleAudioUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const url = URL.createObjectURL(file);
+                    setAudioSrc(url);
+                }
+            };
+
+            // コンテンツを行ごとに解析
+            const parseAndSetLineContents = (content) => {
+                const lines = content.split('\n');
+                const parsedLines = [];
+                let currentLine = { number: '', timestamp: '', text: [] };
+
+                lines.forEach((line) => {
+                    const trimmedLine = line.trim();
+                    if (trimmedLine === '') {
+                        if (currentLine.number) {
+                            parsedLines.push({ ...currentLine });
+                            currentLine = { number: '', timestamp: '', text: [] };
+                        }
+                    } else if (/^\d+$/.test(trimmedLine)) {
+                        currentLine.number = trimmedLine;
+                    } else if (/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/.test(trimmedLine)) {
+                        currentLine.timestamp = trimmedLine;
+                    } else {
+                        currentLine.text.push(trimmedLine);
+                    }
+                });
+
+                if (currentLine.number) {
+                    parsedLines.push(currentLine);
+                }
+
+                setLineContents(parsedLines);
+            };
+
+            // 字幕テキストの更新
+            const handleTextChange = (index, textIndex, newValue) => {
+                const newLineContents = [...lineContents];
+                newLineContents[index].text[textIndex] = newValue;
+                setLineContents(newLineContents);
+                setHasUnsavedChanges(true);
+            };
+
+            // ファイルの保存
+            const handleSave = async () => {
+                if (!fileHandle) {
+                    alert('先にSRTファイルを開いてください。');
+                    return;
+                }
+
+                try {
+                    const content = lineContents.map(line => {
+                        return `${line.number}\n${line.timestamp}\n${line.text.join('\n')}\n`;
+                    }).join('\n');
+
+                    // ファイルの書き込み権限を取得
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(content);
+                    await writable.close();
+                    
+                    setHasUnsavedChanges(false);
+                    setSaveStatus('最終保存: ' + new Date().toLocaleTimeString());
+                } catch (err) {
+                    console.error('保存エラー:', err);
+                    setSaveStatus('保存に失敗しました');
+                    throw err;
+                }
+            };
+
+            // 別名で保存
+            const handleSaveAs = async () => {
+                if (lineContents.length === 0) {
+                    alert('保存するデータがありません。');
+                    return;
+                }
+
+                try {
+                    const content = lineContents.map(line => {
+                        return `${line.number}\n${line.timestamp}\n${line.text.join('\n')}\n`;
+                    }).join('\n');
+
+                    const handle = await window.showSaveFilePicker({
+                        types: [
+                            {
+                                description: 'SRT Files',
+                                accept: {
+                                    'text/plain': ['.srt'],
+                                },
+                            },
+                        ],
+                    });
+
+                    const writable = await handle.createWritable();
+                    await writable.write(content);
+                    await writable.close();
+
+                    setFileHandle(handle);
+                    setHasUnsavedChanges(false);
+                    setSaveStatus('ファイルを保存しました');
+                } catch (err) {
+                    if (err.name !== 'AbortError') {
+                        console.error('保存エラー:', err);
+                        setSaveStatus('保存に失敗しました');
+                    }
+                }
+            };
+
+                return (
+            <div className="main-content">
+                <div className="container mx-auto p-4 max-w-4xl">
+                    <div className="bg-white rounded-lg shadow-lg">
+                        <div className="p-6">
+                            <h1 className="text-2xl font-bold mb-6">SRT Editor with Audio Preview</h1>
+                            <div className="space-y-4">
+                                <div className="flex gap-4 flex-wrap">
+                                    <div>
+                                        <label className="block text-sm font-medium mb-2">SRTファイル:</label>
+                                        <button
+                                            onClick={handleSRTUpload}
+                                            className="px-4 py-2 rounded bg-blue-500 text-white hover:bg-blue-600"
+                                        >
+                                            ファイルを開く
+                                        </button>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-2">音声ファイル:</label>
+                                        <input
+                                            type="file"
+                                            accept="audio/*"
+                                            onChange={handleAudioUpload}
+                                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {srtContent && (
+                                    <div className="flex justify-between items-center mb-2">
+                                        <div className="text-sm text-gray-600">
+                                            {saveStatus}
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleSave}
+                                                className="px-4 py-2 rounded bg-green-500 text-white hover:bg-green-600"
+                                                disabled={!hasUnsavedChanges}
+                                            >
+                                                上書き保存
+                                            </button>
+                                            <button
+                                                onClick={handleSaveAs}
+                                                className="px-4 py-2 rounded bg-blue-500 text-white hover:bg-blue-600"
+                                            >
+                                                別名で保存
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                <div className="border rounded-lg p-4 bg-gray-50 space-y-4">
+                                    {lineContents.map((line, index) => (
+                                        <div key={index} className="border-b pb-4 last:border-b-0 last:pb-0">
+                                            <div className="text-sm text-gray-500">{line.number}</div>
+                                            <div className="flex items-center gap-2 my-2">
+                                                {line.timestamp.split(' --> ').map((timestamp, i) => (
+                                                    <React.Fragment key={i}>
+                                                        <button
+                                                            className={`px-2 py-1 text-sm rounded ${audioSrc ? 'bg-blue-100 hover:bg-blue-200 text-blue-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                                            onClick={() => handleTimestampClick(timestamp)}
+                                                            disabled={!audioSrc}
+                                                        >
+                                                            ▶ {timestamp}
+                                                        </button>
+                                                        {i === 0 && <span className="text-gray-600">--></span>}
+                                                    </React.Fragment>
+                                                ))}
+                                            </div>
+                                            {line.text.map((text, textIndex) => (
+                                                <input
+                                                    key={textIndex}
+                                                    value={text}
+                                                    onChange={(e) => handleTextChange(index, textIndex, e.target.value)}
+                                                    className="w-full p-2 rounded border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 mb-1 last:mb-0"
+                                                />
+                                            ))}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 固定位置の音声コントロール */}
+                {audioSrc && (
+                    <div className="audio-controls-container">
+                        <div className="container mx-auto max-w-4xl">
+                            <audio 
+                                ref={audioRef} 
+                                src={audioSrc} 
+                                className="w-full" 
+                                controls 
+                            />
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+        };
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
