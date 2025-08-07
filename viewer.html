@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -24,6 +25,11 @@
             const [currentSubtitleIndex, setCurrentSubtitleIndex] = React.useState(0);
             const [playbackRate, setPlaybackRate] = React.useState(1); // 再生速度の状態
             const [autoPauseEnabled, setAutoPauseEnabled] = React.useState(false); // 自動一時停止機能の状態
+            
+            // ▼▼▼ 追加 ▼▼▼
+            // 各字幕行のDOM要素への参照を保持するためのref
+            const subtitleRefs = React.useRef([]);
+            // ▲▲▲ 追加 ▲▲▲
 
             // SRTの解析関数
             const parseSRTTimestamp = (timestamp) => {
@@ -111,6 +117,10 @@
                 }
 
                 setLineContents(parsedLines);
+                // ▼▼▼ 追加 ▼▼▼
+                // 新しい字幕コンテンツがロードされたら、ref配列のサイズを合わせる
+                subtitleRefs.current = subtitleRefs.current.slice(0, parsedLines.length);
+                // ▲▲▲ 追加 ▲▲▲
             };
 
             // ドキュメント全体のドラッグオーバーイベント
@@ -197,7 +207,7 @@
                             return currentTime >= start && currentTime <= end;
                         });
 
-                        if (newIndex !== -1) {
+                        if (newIndex !== -1 && newIndex !== currentSubtitleIndex) { // インデックスが実際に変わった時のみ更新
                             setCurrentSubtitleIndex(newIndex);
                             if (autoPauseEnabled && audioRef.current.play) {
                                 const endTime = parseSRTTimestamp(lineContents[newIndex].timestamp.split(' --> ')[1]);
@@ -209,17 +219,28 @@
                                 };
                                 audioRef.current.addEventListener('timeupdate', pauseListener);
                             }
-                        } else {
+                        } else if (newIndex === -1) {
+                            // 現在再生中の字幕がない場合、最も近い過去の字幕を探す
                             newIndex = lineContents.findIndex(line => {
                                 const start = parseSRTTimestamp(line.timestamp.split(' --> ')[0]);
                                 return currentTime < start;
                             });
+                            
+                            let finalIndex;
                             if (newIndex === -1) {
-                                newIndex = lineContents.length - 1;
+                                // すべての字幕が終わった後
+                                finalIndex = lineContents.length - 1;
                             } else if (newIndex > 0) {
-                                newIndex--;
+                                // 次の字幕が始まる前
+                                finalIndex = newIndex - 1;
+                            } else {
+                                // 最初の字幕が始まる前
+                                finalIndex = 0;
                             }
-                            setCurrentSubtitleIndex(newIndex);
+                            
+                            if(finalIndex !== currentSubtitleIndex) {
+                                setCurrentSubtitleIndex(finalIndex);
+                            }
                         }
                     }
                 };
@@ -233,7 +254,7 @@
                         audioRef.current.removeEventListener('timeupdate', updateCurrentSubtitleIndex);
                     }
                 };
-            }, [lineContents, audioSrc, autoPauseEnabled]);
+            }, [lineContents, audioSrc, autoPauseEnabled, currentSubtitleIndex]); // currentSubtitleIndexを依存配列に追加
 
             // 字幕行をクリックしたときにcurrentSubtitleIndexを更新し、再生を開始・一時停止
             const handleSubtitleClick = (index) => {
@@ -294,6 +315,18 @@
                 };
             }, []);
 
+            // ▼▼▼ 追加 ▼▼▼
+            // 自動スクロール機能
+            React.useEffect(() => {
+                if (subtitleRefs.current[currentSubtitleIndex]) {
+                    subtitleRefs.current[currentSubtitleIndex].scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center',
+                    });
+                }
+            }, [currentSubtitleIndex]);
+            // ▲▲▲ 追加 ▲▲▲
+
             return (
                 <div className={`pb-16 sm:pb-24 ${isDraggingOver ? 'bg-blue-50' : ''}`}>
                     {isDraggingOver && (
@@ -343,6 +376,10 @@
                                         {lineContents.map((line, index) => (
                                             <div
                                                 key={index}
+                                                // ▼▼▼ 変更 ▼▼▼
+                                                // refを各要素に設定
+                                                ref={el => subtitleRefs.current[index] = el}
+                                                // ▲▲▲ 変更 ▲▲▲
                                                 className={`border-b pb-4 last:border-b-0 last:pb-0 cursor-pointer ${index === currentSubtitleIndex ? 'bg-yellow-100' : 'hover:bg-gray-100'}`}
                                                 onClick={() => handleSubtitleClick(index)}
                                             >
