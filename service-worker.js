@@ -1,5 +1,5 @@
 // キャッシュ名にバージョンを埋め込むためのプレースホルダー
-const CACHE_NAME = "srt-perview-cache-2025.11.03.103131";
+const CACHE_NAME = "srt-perview-cache-2025.11.03.103302";
 
 // キャッシュするファイルのリスト
 const urlsToCache = [
