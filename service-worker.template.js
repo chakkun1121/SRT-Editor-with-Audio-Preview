@@ -1,17 +1,13 @@
 // キャッシュ名にバージョンを埋め込むためのプレースホルダー
-const CACHE_NAME = "srt-perview-cache-__CACHE_VERSION__";
+const CACHE_PREFIX = "srt-preview-";
+const CACHE_NAME = CACHE_PREFIX + "__CACHE_VERSION__";
 
 // キャッシュするファイルのリスト
 const urlsToCache = [
   "./",
   "./index.html",
-  "./viewer.html",
   "./icons/icon-192x192.png",
   "./icons/icon-512x512.png",
-  "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js",
-  "https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css",
 ];
 
 // installイベント: ファイルをキャッシュする
@@ -26,12 +22,14 @@ self.addEventListener("install", event => {
 
 // activateイベント: 古いキャッシュを削除する
 self.addEventListener("activate", event => {
-  const cacheWhitelist = [CACHE_NAME];
+  // ★ 古いキャッシュを削除するロジックを修正
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
         cacheNames.map(cacheName => {
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
+          // 自分のプレフィックスを持っていて、かつ現在のキャッシュ名と違うものだけを削除
+          if (cacheName.startsWith(CACHE_PREFIX) && cacheName !== CACHE_NAME) {
+            console.log("Deleting old cache:", cacheName);
             return caches.delete(cacheName);
           }
         })
@@ -39,7 +37,6 @@ self.addEventListener("activate", event => {
     })
   );
 });
-
 // fetchイベント: リクエストに応じてキャッシュから返す
 self.addEventListener("fetch", event => {
   event.respondWith(
